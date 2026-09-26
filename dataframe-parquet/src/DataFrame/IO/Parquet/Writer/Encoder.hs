@@ -4,14 +4,17 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeOperators #-}
 
 module DataFrame.IO.Parquet.Writer.Encoder (
     Encoder (..),
     buildEncoder,
 ) where
 
-import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.Primitive (PrimMonad, PrimState, RealWorld)
+import Bluefin.Eff (Eff, type (<:))
+import Bluefin.IO (IOE)
+import qualified Bluefin.Prim as P
+import Control.Monad.IO.Class (liftIO)
 import Control.Monad.ST (stToIO)
 import Data.Bits (shiftL, (.|.))
 import Data.Int (Int32, Int64)
@@ -27,6 +30,7 @@ import qualified Data.Vector as VB
 import qualified Data.Vector.Unboxed as VU
 import Data.Word (Word8)
 import DataFrame.IO.Parquet.Thrift
+import DataFrame.IO.Parquet.Writer.PrimMonad (runPrimM)
 import DataFrame.IO.Utils.RandomAccess (
     MemoryBuffer (..),
     ensureCapacity,
@@ -55,17 +59,23 @@ import GHC.Float (castDoubleToWord64, castFloatToWord32)
 import Pinch (enum, putField)
 import Type.Reflection (typeRep)
 
-data Encoder m = Encoder
+data Encoder e1 e3 = Encoder
     { encType :: !ThriftType
     , convertedType :: !(Maybe ConvertedType)
     , logicalType :: !(Maybe LogicalType)
     , encodeValue ::
-        !(MemoryBuffer (PrimState m) -> Int -> Int -> m (Int, Bool))
-    , finishValues :: !(MemoryBuffer (PrimState m) -> Int -> m Int)
+        !(MemoryBuffer (P.PrimStateEff e1) -> Int -> Int -> Eff e3 (Int, Bool))
+    , finishValues :: !(MemoryBuffer (P.PrimStateEff e1) -> Int -> Eff e3 Int)
     }
 
-buildEncoder :: (PrimMonad m, MonadIO m) => Column -> m (Encoder m)
-buildEncoder col
+buildEncoder ::
+    forall e1 e2 e3.
+    (e1 <: e3, e2 <: e3) =>
+    IOE e1 ->
+    P.Prim e2 e2 ->
+    Column ->
+    Eff e3 (Encoder e2 e3)
+buildEncoder ioe prim col
     | hasElemType @Int32 col =
         pure $
             scalarEncoder @Int32
@@ -99,7 +109,7 @@ buildEncoder col
                 (INT64 enum)
                 Nothing
                 Nothing
-                writeInteger64At
+                (\buffer pos value -> runPrimM ioe prim (writeInteger64At buffer pos value))
                 col
     | hasElemType @Float col =
         pure $
@@ -117,89 +127,95 @@ buildEncoder col
                 Nothing
                 (\buffer pos v -> write64 buffer pos (castDoubleToWord64 v))
                 col
-    | hasElemType @Bool col = boolEncoder col
-    | hasElemType @T.Text col = pure (textEncoder col)
-    | hasElemType @UTCTime col = pure (timestampEncoder col)
+    | hasElemType @Bool col = boolEncoder ioe prim col
+    | hasElemType @T.Text col = pure (textEncoder ioe prim col)
+    | hasElemType @UTCTime col = pure (timestampEncoder ioe prim col)
     | otherwise =
         error ("writeParquet: unsupported column type " <> columnTypeString col)
   where
     write32 buffer pos value = do
-        writeWord32At buffer pos value
+        runPrimM ioe prim (writeWord32At buffer pos value)
         pure (pos + 4)
     write64 buffer pos value = do
-        writeWord64At buffer pos value
+        runPrimM ioe prim (writeWord64At buffer pos value)
         pure (pos + 8)
 
 scalarEncoder ::
-    forall a m.
-    (Columnable a, Monad m) =>
+    forall a e1 e3.
+    (Columnable a) =>
     ThriftType ->
     Maybe ConvertedType ->
     Maybe LogicalType ->
-    (MemoryBuffer (PrimState m) -> Int -> a -> m Int) ->
+    (MemoryBuffer (P.PrimStateEff e1) -> Int -> a -> Eff e3 Int) ->
     Column ->
-    Encoder m
+    Encoder e1 e3
 scalarEncoder tt conv logical writePrim col =
     Encoder tt conv logical (columnWriter @a col writePrim) (\_ pos -> pure pos)
 {-# INLINEABLE scalarEncoder #-}
 {-# SPECIALIZE scalarEncoder ::
+    forall e1 e3.
     ThriftType ->
     Maybe ConvertedType ->
     Maybe LogicalType ->
-    (MemoryBuffer RealWorld -> Int -> Int32 -> IO Int) ->
+    (MemoryBuffer (P.PrimStateEff e1) -> Int -> Int32 -> Eff e3 Int) ->
     Column ->
-    Encoder IO
+    Encoder e1 e3
     #-}
 {-# SPECIALIZE scalarEncoder ::
+    forall e1 e3.
     ThriftType ->
     Maybe ConvertedType ->
     Maybe LogicalType ->
-    (MemoryBuffer RealWorld -> Int -> Int64 -> IO Int) ->
+    (MemoryBuffer (P.PrimStateEff e1) -> Int -> Int64 -> Eff e3 Int) ->
     Column ->
-    Encoder IO
+    Encoder e1 e3
     #-}
 {-# SPECIALIZE scalarEncoder ::
+    forall e1 e3.
     ThriftType ->
     Maybe ConvertedType ->
     Maybe LogicalType ->
-    (MemoryBuffer RealWorld -> Int -> Float -> IO Int) ->
+    (MemoryBuffer (P.PrimStateEff e1) -> Int -> Float -> Eff e3 Int) ->
     Column ->
-    Encoder IO
+    Encoder e1 e3
     #-}
 {-# SPECIALIZE scalarEncoder ::
+    forall e1 e3.
     ThriftType ->
     Maybe ConvertedType ->
     Maybe LogicalType ->
-    (MemoryBuffer RealWorld -> Int -> Double -> IO Int) ->
+    (MemoryBuffer (P.PrimStateEff e1) -> Int -> Double -> Eff e3 Int) ->
     Column ->
-    Encoder IO
+    Encoder e1 e3
     #-}
 {-# SPECIALIZE scalarEncoder ::
+    forall e1 e3.
     ThriftType ->
     Maybe ConvertedType ->
     Maybe LogicalType ->
-    (MemoryBuffer RealWorld -> Int -> Int -> IO Int) ->
+    (MemoryBuffer (P.PrimStateEff e1) -> Int -> Int -> Eff e3 Int) ->
     Column ->
-    Encoder IO
+    Encoder e1 e3
     #-}
 {-# SPECIALIZE scalarEncoder ::
+    forall e1 e3.
     ThriftType ->
     Maybe ConvertedType ->
     Maybe LogicalType ->
-    (MemoryBuffer RealWorld -> Int -> Integer -> IO Int) ->
+    (MemoryBuffer (P.PrimStateEff e1) -> Int -> Integer -> Eff e3 Int) ->
     Column ->
-    Encoder IO
+    Encoder e1 e3
     #-}
 
 columnWriter ::
-    forall a m.
-    (Columnable a, Monad m) =>
+    forall a e1 e3.
+    (Columnable a) =>
     Column ->
-    (MemoryBuffer (PrimState m) -> Int -> a -> m Int) ->
-    MemoryBuffer (PrimState m) ->
+    (MemoryBuffer (P.PrimStateEff e1) -> Int -> a -> Eff e3 Int) ->
+    MemoryBuffer (P.PrimStateEff e1) ->
     Int ->
     Int ->
-    m (Int, Bool)
+    Eff e3 (Int, Bool)
 columnWriter col writePrim = case col of
     BoxedColumn bitmap (values :: VB.Vector b) ->
         case testEquality (typeRep @a) (typeRep @b) of
@@ -221,68 +237,76 @@ columnWriter col writePrim = case col of
             ("writeParquet: incompatible column representation for " <> columnTypeString col)
 {-# INLINEABLE columnWriter #-}
 {-# SPECIALIZE columnWriter ::
+    forall e1 e3.
     Column ->
-    (MemoryBuffer RealWorld -> Int -> Int32 -> IO Int) ->
-    MemoryBuffer RealWorld ->
+    (MemoryBuffer (P.PrimStateEff e1) -> Int -> Int32 -> Eff e3 Int) ->
+    MemoryBuffer (P.PrimStateEff e1) ->
     Int ->
     Int ->
-    IO (Int, Bool)
+    Eff e3 (Int, Bool)
     #-}
 {-# SPECIALIZE columnWriter ::
+    forall e1 e3.
     Column ->
-    (MemoryBuffer RealWorld -> Int -> Int64 -> IO Int) ->
-    MemoryBuffer RealWorld ->
+    (MemoryBuffer (P.PrimStateEff e1) -> Int -> Int64 -> Eff e3 Int) ->
+    MemoryBuffer (P.PrimStateEff e1) ->
     Int ->
     Int ->
-    IO (Int, Bool)
+    Eff e3 (Int, Bool)
     #-}
 {-# SPECIALIZE columnWriter ::
+    forall e1 e3.
     Column ->
-    (MemoryBuffer RealWorld -> Int -> Float -> IO Int) ->
-    MemoryBuffer RealWorld ->
+    (MemoryBuffer (P.PrimStateEff e1) -> Int -> Float -> Eff e3 Int) ->
+    MemoryBuffer (P.PrimStateEff e1) ->
     Int ->
     Int ->
-    IO (Int, Bool)
+    Eff e3 (Int, Bool)
     #-}
 {-# SPECIALIZE columnWriter ::
+    forall e1 e3.
     Column ->
-    (MemoryBuffer RealWorld -> Int -> Double -> IO Int) ->
-    MemoryBuffer RealWorld ->
+    (MemoryBuffer (P.PrimStateEff e1) -> Int -> Double -> Eff e3 Int) ->
+    MemoryBuffer (P.PrimStateEff e1) ->
     Int ->
     Int ->
-    IO (Int, Bool)
+    Eff e3 (Int, Bool)
     #-}
 {-# SPECIALIZE columnWriter ::
+    forall e1 e3.
     Column ->
-    (MemoryBuffer RealWorld -> Int -> Bool -> IO Int) ->
-    MemoryBuffer RealWorld ->
+    (MemoryBuffer (P.PrimStateEff e1) -> Int -> Bool -> Eff e3 Int) ->
+    MemoryBuffer (P.PrimStateEff e1) ->
     Int ->
     Int ->
-    IO (Int, Bool)
+    Eff e3 (Int, Bool)
     #-}
 {-# SPECIALIZE columnWriter ::
+    forall e1 e3.
     Column ->
-    (MemoryBuffer RealWorld -> Int -> UTCTime -> IO Int) ->
-    MemoryBuffer RealWorld ->
+    (MemoryBuffer (P.PrimStateEff e1) -> Int -> UTCTime -> Eff e3 Int) ->
+    MemoryBuffer (P.PrimStateEff e1) ->
     Int ->
     Int ->
-    IO (Int, Bool)
+    Eff e3 (Int, Bool)
     #-}
 {-# SPECIALIZE columnWriter ::
+    forall e1 e3.
     Column ->
-    (MemoryBuffer RealWorld -> Int -> Int -> IO Int) ->
-    MemoryBuffer RealWorld ->
+    (MemoryBuffer (P.PrimStateEff e1) -> Int -> Int -> Eff e3 Int) ->
+    MemoryBuffer (P.PrimStateEff e1) ->
     Int ->
     Int ->
-    IO (Int, Bool)
+    Eff e3 (Int, Bool)
     #-}
 {-# SPECIALIZE columnWriter ::
+    forall e1 e3.
     Column ->
-    (MemoryBuffer RealWorld -> Int -> Integer -> IO Int) ->
-    MemoryBuffer RealWorld ->
+    (MemoryBuffer (P.PrimStateEff e1) -> Int -> Integer -> Eff e3 Int) ->
+    MemoryBuffer (P.PrimStateEff e1) ->
     Int ->
     Int ->
-    IO (Int, Bool)
+    Eff e3 (Int, Bool)
     #-}
 
 isPresent :: Maybe Bitmap -> Int -> Bool
@@ -290,47 +314,59 @@ isPresent Nothing _ = True
 isPresent (Just bitmap) row = bitmapTestBit bitmap row
 {-# INLINE isPresent #-}
 
-boolEncoder :: (PrimMonad m) => Column -> m (Encoder m)
-boolEncoder col = do
-    bitsRef <- newMutVar (0 :: Word8)
-    countRef <- newMutVar (0 :: Int)
+boolEncoder ::
+    (e1 <: e3, e2 <: e3) =>
+    IOE e1 ->
+    P.Prim e2 e2 ->
+    Column ->
+    Eff e3 (Encoder e2 e3)
+boolEncoder ioe prim col = do
+    (bitsRef, countRef) <-
+        runPrimM ioe prim $ do
+            bitsRef <- newMutVar (0 :: Word8)
+            countRef <- newMutVar (0 :: Int)
+            pure (bitsRef, countRef)
     let addBit buffer pos value = do
-            bits <- readMutVar bitsRef
-            count <- readMutVar countRef
-            let bits' = if value then bits .|. ((1 :: Word8) `shiftL` count) else bits
-                count' = count + 1
-            if count' == 8
-                then do
-                    arr <- readMutVar buffer.arrayRef
-                    writeByteArray arr pos bits'
-                    writeMutVar bitsRef 0
-                    writeMutVar countRef 0
-                    pure (pos + 1)
-                else do
-                    writeMutVar bitsRef bits'
-                    writeMutVar countRef count'
-                    pure pos
-        finish buffer pos = do
-            count <- readMutVar countRef
-            pos' <-
-                if count > 0
+            runPrimM ioe prim $ do
+                bits <- readMutVar bitsRef
+                count <- readMutVar countRef
+                let bits' = if value then bits .|. ((1 :: Word8) `shiftL` count) else bits
+                    count' = count + 1
+                if count' == 8
                     then do
-                        bits <- readMutVar bitsRef
                         arr <- readMutVar buffer.arrayRef
-                        writeByteArray arr pos bits
+                        writeByteArray arr pos bits'
+                        writeMutVar bitsRef 0
+                        writeMutVar countRef 0
                         pure (pos + 1)
-                    else pure pos
-            writeMutVar bitsRef 0
-            writeMutVar countRef 0
-            pure pos'
+                    else do
+                        writeMutVar bitsRef bits'
+                        writeMutVar countRef count'
+                        pure pos
+        finish buffer pos = do
+            runPrimM ioe prim $ do
+                count <- readMutVar countRef
+                pos' <-
+                    if count > 0
+                        then do
+                            bits <- readMutVar bitsRef
+                            arr <- readMutVar buffer.arrayRef
+                            writeByteArray arr pos bits
+                            pure (pos + 1)
+                        else pure pos
+                writeMutVar bitsRef 0
+                writeMutVar countRef 0
+                pure pos'
     pure
         (Encoder (BOOLEAN enum) Nothing Nothing (columnWriter @Bool col addBit) finish)
 
 textEncoder ::
-    (PrimMonad m, MonadIO m) =>
+    (e1 <: e3, e2 <: e3) =>
+    IOE e1 ->
+    P.Prim e2 e2 ->
     Column ->
-    Encoder m
-textEncoder col =
+    Encoder e2 e3
+textEncoder ioe prim col =
     Encoder
         (BYTE_ARRAY enum)
         (Just (UTF8 enum))
@@ -360,29 +396,32 @@ textEncoder col =
             pure (pos', True)
         | otherwise = pure (pos, False)
     writeTextSlice buffer pos bytes offset count = do
-        writeMutVar buffer.positionRef pos
-        _ <- ensureCapacity buffer (pos + 4 + count)
-        writeWord32At buffer pos (fromIntegral count)
-        arr <- readMutVar buffer.arrayRef
-        withMutableByteArrayContentsPrim arr $ \ptr ->
-            liftIO $
-                stToIO
-                    ( TA.copyToPointer
-                        bytes
-                        offset
-                        (ptr `plusPtr` (pos + 4))
-                        count
-                    )
-        pure (pos + 4 + count)
+        runPrimM ioe prim $ do
+            writeMutVar buffer.positionRef pos
+            _ <- ensureCapacity buffer (pos + 4 + count)
+            writeWord32At buffer pos (fromIntegral count)
+            arr <- readMutVar buffer.arrayRef
+            withMutableByteArrayContentsPrim arr $ \ptr ->
+                liftIO $
+                    stToIO
+                        ( TA.copyToPointer
+                            bytes
+                            offset
+                            (ptr `plusPtr` (pos + 4))
+                            count
+                        )
+            pure (pos + 4 + count)
     mismatch =
         error
             ("writeParquet: incompatible text representation for " <> columnTypeString col)
 
 timestampEncoder ::
-    (PrimMonad m) =>
+    (e1 <: e3, e2 <: e3) =>
+    IOE e1 ->
+    P.Prim e2 e2 ->
     Column ->
-    Encoder m
-timestampEncoder col =
+    Encoder e2 e3
+timestampEncoder ioe prim col =
     Encoder
         (INT64 enum)
         (Just (TIMESTAMP_MICROS enum))
@@ -391,8 +430,9 @@ timestampEncoder col =
         (\_ pos -> pure pos)
   where
     writeMicros buffer pos t = do
-        writeWord64At buffer pos (fromIntegral (utcToMicros t))
-        pure (pos + 8)
+        runPrimM ioe prim $ do
+            writeWord64At buffer pos (fromIntegral (utcToMicros t))
+            pure (pos + 8)
 
 timestampLogical :: LogicalType
 timestampLogical =

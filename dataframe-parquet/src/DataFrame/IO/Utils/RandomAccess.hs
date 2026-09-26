@@ -1,5 +1,6 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE TypeOperators #-}
 
 module DataFrame.IO.Utils.RandomAccess (
     uncurry3,
@@ -36,6 +37,8 @@ module DataFrame.IO.Utils.RandomAccess (
     writeByteStringToFile,
 ) where
 
+import Bluefin.Eff (Eff, type (<:))
+import Bluefin.IO (IOE, withEffToIO_)
 import Control.Exception (bracket, bracketOnError, finally)
 import Control.Monad (when)
 import Control.Monad.IO.Class (MonadIO (..))
@@ -165,18 +168,21 @@ openWritableBinaryFile filepath = do
     pure . WritableBinaryHandle $ h
 
 atomicallyWriteFile ::
+    (e1 <: es) =>
+    IOE e1 ->
     FilePath ->
-    (FilePath -> IO a) ->
-    IO a
-atomicallyWriteFile path action =
-    bracketOnError
-        openAction
-        removeFile
-        ( \tmpFile -> do
-            result <- action tmpFile
-            renameFile tmpFile path
-            pure result
-        )
+    (FilePath -> Eff es a) ->
+    Eff es a
+atomicallyWriteFile ioe path action =
+    withEffToIO_ ioe $ \runInIO ->
+        bracketOnError
+            openAction
+            removeFile
+            ( \tmpFile -> do
+                result <- runInIO (action tmpFile)
+                renameFile tmpFile path
+                pure result
+            )
   where
     openAction =
         bracketOnError
@@ -193,13 +199,17 @@ atomicallyWriteFile path action =
             )
 
 withWritableBinaryFile ::
+    (e1 <: es) =>
+    IOE e1 ->
     FilePath ->
-    (WritableBinaryHandle -> IO a) ->
-    IO a
-withWritableBinaryFile filepath =
-    bracket
-        (openWritableBinaryFile filepath)
-        (hClose . unHandle)
+    (WritableBinaryHandle -> Eff es a) ->
+    Eff es a
+withWritableBinaryFile ioe filepath action =
+    withEffToIO_ ioe $ \runInIO ->
+        bracket
+            (openWritableBinaryFile filepath)
+            (hClose . unHandle)
+            (runInIO . action)
 
 data MemoryBuffer s = MemoryBuffer
     { arrayRef :: !(MutVar s (MutableByteArray s))

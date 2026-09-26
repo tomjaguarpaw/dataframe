@@ -3,6 +3,7 @@
 -- | Tests for the writer-buffer logic in "DataFrame.IO.Utils.RandomAccess".
 module Main where
 
+import Bluefin.IO (effIO, runEff)
 import Control.Exception (SomeException, catch, evaluate)
 import qualified Data.ByteString as BS
 import Data.List (sortOn)
@@ -103,8 +104,9 @@ directFileFlush = TestCase $
             payload = BS.pack (take 300000 (cycle [0 .. 255]))
         buffer <- mallocBuffer 1
         writeByteString buffer payload
-        withWritableBinaryFile outPath $ \output ->
-            flushBufferToFile output buffer
+        runEff $ \ioe ->
+            withWritableBinaryFile ioe outPath $ \output ->
+                effIO ioe (flushBufferToFile output buffer)
         residency <- bufferResidency buffer
         contents <- BS.readFile outPath
         assertEqual "source cleared after file flush" 0 residency

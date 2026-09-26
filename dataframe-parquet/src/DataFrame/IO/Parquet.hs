@@ -18,6 +18,8 @@ module DataFrame.IO.Parquet (
     -- * Writing
     writeParquet,
     writeParquetWithOptions,
+    writeParquetEff,
+    writeParquetWithOptionsEff,
 
     -- * Options
     ParquetReadOptions (..),
@@ -136,7 +138,9 @@ import DataFrame.IO.Parquet.Writer (
     defaultParquetWriteOptions,
     nativeTypeKeyPrefix,
     writeParquet,
+    writeParquetEff,
     writeParquetWithOptions,
+    writeParquetWithOptionsEff,
  )
 import DataFrame.IO.Utils.RandomAccess (
     RandomAccess (..),
