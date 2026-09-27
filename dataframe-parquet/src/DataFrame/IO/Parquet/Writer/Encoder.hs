@@ -11,11 +11,11 @@ module DataFrame.IO.Parquet.Writer.Encoder (
 ) where
 
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.Primitive (PrimBase, PrimMonad, PrimState, RealWorld)
+import Control.Monad.Primitive (PrimMonad, PrimState, RealWorld)
 import Control.Monad.ST (stToIO)
 import Data.Bits (shiftL, (.|.))
 import Data.Int (Int32, Int64)
-import Data.Primitive.ByteArray (withMutableByteArrayContents, writeByteArray)
+import Data.Primitive.ByteArray (writeByteArray)
 import Data.Primitive.MutVar (newMutVar, readMutVar, writeMutVar)
 import qualified Data.Text as T
 import qualified Data.Text.Array as TA
@@ -30,6 +30,7 @@ import DataFrame.IO.Parquet.Thrift
 import DataFrame.IO.Utils.RandomAccess (
     MemoryBuffer (..),
     ensureCapacity,
+    withMutableByteArrayContentsPrim,
     writeInteger64At,
     writeWord32At,
     writeWord64At,
@@ -63,7 +64,7 @@ data Encoder m = Encoder
     , finishValues :: !(MemoryBuffer (PrimState m) -> Int -> m Int)
     }
 
-buildEncoder :: (PrimBase m, MonadIO m) => Column -> m (Encoder m)
+buildEncoder :: (PrimMonad m, MonadIO m) => Column -> m (Encoder m)
 buildEncoder col
     | hasElemType @Int32 col =
         pure $
@@ -326,7 +327,7 @@ boolEncoder col = do
         (Encoder (BOOLEAN enum) Nothing Nothing (columnWriter @Bool col addBit) finish)
 
 textEncoder ::
-    (PrimBase m, MonadIO m) =>
+    (PrimMonad m, MonadIO m) =>
     Column ->
     Encoder m
 textEncoder col =
@@ -363,7 +364,7 @@ textEncoder col =
         _ <- ensureCapacity buffer (pos + 4 + count)
         writeWord32At buffer pos (fromIntegral count)
         arr <- readMutVar buffer.arrayRef
-        withMutableByteArrayContents arr $ \ptr ->
+        withMutableByteArrayContentsPrim arr $ \ptr ->
             liftIO $
                 stToIO
                     ( TA.copyToPointer

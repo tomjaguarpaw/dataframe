@@ -421,7 +421,7 @@ bufferedSize =
         0
 
 initColumnChunkState ::
-    (PrimBase m, MonadIO m) =>
+    (PrimMonad m, MonadIO m) =>
     ParquetWriteOptions ->
     T.Text ->
     Column ->

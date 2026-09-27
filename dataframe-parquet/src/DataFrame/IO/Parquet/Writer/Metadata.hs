@@ -12,7 +12,7 @@ module DataFrame.IO.Parquet.Writer.Metadata (
 ) where
 
 import Control.Monad.IO.Class (MonadIO)
-import Control.Monad.Primitive (PrimBase)
+import Control.Monad.Primitive (PrimMonad)
 import qualified Data.ByteString as BS
 import Data.Int (Int64)
 import qualified Data.Text as T
@@ -140,7 +140,7 @@ mkRowGroup chunks totalCompressed totalUncompressed rgRows =
         }
 
 writeFooter ::
-    (PrimBase m, MonadIO m) =>
+    (PrimMonad m, MonadIO m) =>
     WritableBinaryHandle ->
     [SchemaElement] ->
     Int ->
